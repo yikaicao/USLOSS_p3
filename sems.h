@@ -3,5 +3,7 @@
 typedef struct semaphore semaphore;
 
 struct semaphore {
-    int 		sid;
+    int     sid;
+    int     count;
+    procPtr blockedList;
 };

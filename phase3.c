@@ -4,25 +4,44 @@
 #include <phase1.h>
 #include <phase2.h>
 #include <phase3.h>
+#include <sems.h>
 #include <usyscall.h>
 
+/*---------- Global Variables ----------*/
+int debugflag3 = 0;
+procStruct  ProcTable[MAXPROC];
+semaphore   SemTable[MAX_SEMS];
+
 /*---------- Function Prototypes ----------*/
-extern int start3(char *);
+extern int start3(char*);
 
+void check_kernel_mode(char*);
 
-int
-start2(char *arg)
+void nullsys3();
+
+void initSysCallVec();
+void initProcTable();
+void initSemTable();
+
+//void spawnReal(char*, int (*func)(char*), char*, unsigned int, int);
+//void waitReal(int*);
+
+int start2(char *arg)
 {
     int pid;
     int status;
+    
     /*
      * Check kernel mode here.
      */
+    check_kernel_mode("start2");
 
     /*
      * Data structure initialization as needed...
      */
-
+    initSysCallVec();
+    initProcTable();
+    initSemTable();
 
     /*
      * Create first user-level process and wait for it to finish.
@@ -60,5 +79,86 @@ start2(char *arg)
      */
     pid = waitReal(&status);
 
+    
+    return -1; // should not get here
 } /* start2 */
 
+
+
+/*---------- check_kernel_mode ----------*/
+void check_kernel_mode(char *arg)
+{
+    if (!(USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()))
+    {
+        USLOSS_Console("%s(): called while in user mode. Halting...\n", arg);
+    }
+} /* check_kernel_mode */
+
+
+/*---------- nullsys3 ----------*/
+void nullsys3()
+{
+    USLOSS_Console("nullsys3(): called. Halting..\n");
+    //TODO: should terminate current process instead of halting
+    USLOSS_Halt(1);
+    
+} /* nullsys3 */
+
+
+/*---------- initSysCallVec ----------*/
+void initSysCallVec()
+{
+    if (debugflag3)
+        USLOSS_Console("initSysCallVec(): entered");
+    
+    int i;
+    for (i = 0; i < USLOSS_MAX_SYSCALLS; i++)
+        systemCallVec[i] = nullsys3;
+} /* initSysCallVec */
+
+
+/*---------- initProcTable ----------*/
+void initProcTable()
+{
+    if (debugflag3)
+        USLOSS_Console("initProcTable(): entered");
+    
+    int i;
+    for (i = 0; i < MAXPROC; i++)
+    {
+        ProcTable[i] = (procStruct) {
+            .pid            = -1,
+            .priority       = -1,
+            // name and startArg is initialized later
+            .startFunc      = NULL,
+            .stackSize      = -1,
+            .nextProcPtr    = NULL,
+            .childProcPtr   = NULL,
+            .nextSiblingPtr = NULL,
+            .privateMBoxID  = -1,
+            .parentPID      = -1
+        };
+        // name and startArg is initialized here
+        memset(ProcTable[i].name, 0, sizeof(char)*MAXNAME);
+        memset(ProcTable[i].startArg, 0, sizeof(char)*MAXARG);
+    }
+} /* initProcTable */
+
+
+/*---------- initSemTable ----------*/
+void initSemTable()
+{
+    if (debugflag3)
+        USLOSS_Console("initSemTable(): entered");
+    
+    int i;
+    for (i = 0; i < MAX_SEMS; i++)
+    {
+        SemTable[i] = (semaphore) {
+            .sid            = -1,
+            .count          = -1,
+            .blockedList    = NULL
+        };
+    }
+    
+} /* initSemTable */

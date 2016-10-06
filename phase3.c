@@ -1,8 +1,13 @@
+#include <stdlib.h>
+#include <string.h>
 #include <usloss.h>
 #include <phase1.h>
 #include <phase2.h>
 #include <phase3.h>
 #include <usyscall.h>
+
+/*---------- Function Prototypes ----------*/
+extern int start3(char *);
 
 
 int

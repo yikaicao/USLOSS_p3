@@ -8,6 +8,10 @@
 #include <libuser.h>
 #include <usyscall.h>
 
+
+#define MINPRIORITY 5
+#define MAXPRIORITY 1
+
 /*---------- Global Variables ----------*/
 int debugflag3 = 0;
 procStruct  ProcTable[MAXPROC];
@@ -17,7 +21,7 @@ semaphore   SemTable[MAX_SEMS];
 extern int start3(char*);
 
 void check_kernel_mode(char*);
-
+void setUserMode();
 void nullsys3();
 
 void initSysCallVec();
@@ -34,7 +38,8 @@ int waitReal(int*);
 void terminate(systemArgs*);
 void terminateReal(int);
 
-void setUserMode();
+void semCreate(systemArgs*);
+int semCreateReal(int);
 
 int start2(char *arg)
 {
@@ -113,10 +118,20 @@ void spawn(systemArgs *sysArg)
     int priority = (long) sysArg->arg4;
     char *name = sysArg->arg5;
     
-    // get kidpid
+    // check value
+    if (func == NULL ||
+        stackSize < USLOSS_MIN_STACK ||
+        priority > MINPRIORITY ||
+        priority < MAXPRIORITY)
+    {
+        sysArg->arg1 = (void*) ((long)-1);
+        return;
+    }
+    
+    // call spawnReal
     int kidpid = spawnReal(name, func, arg, stackSize, priority);
     
-    // update sysArg
+    // encode sysArg
     sysArg->arg1 = (void*) ((long)kidpid);
     
     // if zapped terminate itself
@@ -125,7 +140,6 @@ void spawn(systemArgs *sysArg)
     setUserMode();
     return;
 } /* spawn */
-
 
 
 /* ------------------------------------------------------------------------
@@ -153,10 +167,8 @@ int spawnReal(char* name, int (*func)(char*), char *arg, unsigned int stackSize,
     }
     /* end of updating process table */
     
-    // Send to child's private mail box when it gets to run earlier than parent
-    if (ProcTable[kidpid % MAXPROC].priority <
-        ProcTable[getpid() % MAXPROC].priority)
-        MboxSend(ProcTable[kidpid % MAXPROC].privateMboxID, NULL, 0);
+    // synchronize with child
+    MboxSend(ProcTable[kidpid % MAXPROC].privateMboxID, NULL, 0);
     
     return kidpid;
 } /* spawnReal */
@@ -176,9 +188,9 @@ void spawnLaunch()
     
     int result;
     int curpid = getpid();
-    // has not synchronized with parent yet
-    if (ProcTable[curpid % MAXPROC].pid == -1)
-        MboxReceive(ProcTable[curpid % MAXPROC].privateMboxID, NULL, 0);
+    
+    // synchronize with parent
+    MboxReceive(ProcTable[curpid % MAXPROC].privateMboxID, NULL, 0);
     
     // launch current process
     setUserMode();
@@ -206,7 +218,7 @@ void wait(systemArgs *sysArg)
     int quitStatus;
     int quitpid = waitReal(&quitStatus);
     
-    // update sysArgs
+    // encode sysArgs
     sysArg->arg1 = (void*) ((long)quitpid);
     sysArg->arg2 = (void*) ((long)quitStatus);
     
@@ -245,6 +257,7 @@ void terminate(systemArgs *sysArg)
     if (debugflag3)
         USLOSS_Console("terminate(): entered\n");
     
+    // call terminateReal
     terminateReal((long)sysArg->arg1);
     setUserMode();
 } /* terminate */
@@ -260,20 +273,109 @@ void terminate(systemArgs *sysArg)
 void terminateReal(int status)
 {
     if (debugflag3)
-        USLOSS_Console("terminate(): entered\n");
+        USLOSS_Console("terminateReal(): entered\n");
     
     quit(status);
 } /* terminateReal */
+
+
+/* ------------------------------------------------------------------------
+    Name - semCreate
+    Purpose - Check value and call semCreateReal.
+    Parameters - A sysArg.
+    Returns - None.
+    Side Effects - New semaphore gets created.
+ ----------------------------------------------------------------------- */
+void semCreate(systemArgs *sysArg)
+{
+    if (debugflag3)
+        USLOSS_Console("semCreate(): entered\n");
+    
+    // extract value from sysArg
+    int initValue = (long)sysArg->arg1;
+    
+    // check value
+    if (initValue < 0)
+    {
+        sysArg->arg4 = (void*) (long) -2;
+        return;
+    }
+    
+    // call semCreateReal
+    int semID = semCreateReal(initValue);
+    
+    // check full sem table
+    if (semID == MAX_SEMS)
+    {
+        sysArg->arg4 = (void*) (long) -1;
+    }
+    // encode sysArg
+    else
+    {
+        sysArg->arg1 = (void*)(long) semID;
+        sysArg->arg4 = (void*)(long) 0;
+    }
+    
+    // set to user mode
+    setUserMode();
+} /* semCreate */
+
+
+
+/* ------------------------------------------------------------------------
+    Name - semCreateReal
+    Purpose - Really create a semaphore.
+    Parameters - Initvalue.
+    Returns - ID of new created semaphore.
+    Side Effects - New semaphore gets created.
+ ----------------------------------------------------------------------- */
+int semCreateReal(int initValue)
+{
+    if (debugflag3)
+        USLOSS_Console("semCreateReal(): entered\n");
+    
+    // find emplty slot in sem table
+    int semID = 0;
+    while(semID < MAX_SEMS && SemTable[semID].sid != -1 )
+    {
+        semID++;
+    }
+
+    // check full sem table
+    if (semID == MAX_SEMS)
+    {
+        return semID;
+    }
+    
+    // assign mutex mailbox
+    int mutexID = MboxCreate(1, 0);
+    
+    // update sem table
+    SemTable[semID].sid     = semID;
+    SemTable[semID].count   = initValue;
+    SemTable[semID].mutexID = mutexID;
+    
+    return SemTable[semID].sid;
+    
+} /* semCreateReal */
 
 
 /*---------- check_kernel_mode ----------*/
 void check_kernel_mode(char *arg)
 {
     if (!(USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()))
-    {
         USLOSS_Console("%s(): called while in user mode. Halting...\n", arg);
-    }
 } /* check_kernel_mode */
+
+
+/*---------- setUserMode ----------*/
+void setUserMode(){
+    if(debugflag3)
+        USLOSS_Console("setUserMode(): entered\n");
+    
+    // USLOSS_PsrGet() 'AND' binary number '1111110' so that last bit is set to be 0
+    USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE );
+} /* setUserMode */
 
 
 /*---------- nullsys3 ----------*/
@@ -301,6 +403,8 @@ void initSysCallVec()
     systemCallVec[SYS_SPAWN] = (void *)spawn;
     systemCallVec[SYS_WAIT] = (void *)wait;
     systemCallVec[SYS_TERMINATE] = (void *)terminate;
+    systemCallVec[SYS_SEMCREATE] = (void *)semCreate;
+    
     
 } /* initSysCallVec */
 
@@ -345,15 +449,10 @@ void initSemTable()
         SemTable[i] = (semaphore) {
             .sid            = -1,
             .count          = -1,
-            .blockedList    = NULL
+            .blockedList    = NULL,
+            .mutexID        = -1
         };
     }
     
 } /* initSemTable */
 
-/*---------- setUserMode ----------*/
-void setUserMode(){
-    if(debugflag3)
-        USLOSS_Console("setUserMode(): entered\n");
-    USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE );
-} /* setUserMode */

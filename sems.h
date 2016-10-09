@@ -6,4 +6,5 @@ struct semaphore {
     int     sid;
     int     count;
     procPtr blockedList;
+    int     mutexID;
 };

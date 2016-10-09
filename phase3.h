@@ -22,6 +22,6 @@ struct procStruct{
     procPtr     nextProcPtr; // to keep track of next blocked process waiting for a semaphore
     procPtr     childProcPtr; // used in terminate
     procPtr     nextSiblingPtr; // used in terminate
-    int         privateMBoxID; // used in self blocked
+    int         privateMboxID; // used in self blocked
     int         parentPID; // used in terminate
 };

@@ -5,6 +5,7 @@
 #include <phase2.h>
 #include <phase3.h>
 #include <sems.h>
+#include <libuser.h>
 #include <usyscall.h>
 
 /*---------- Global Variables ----------*/
@@ -23,8 +24,17 @@ void initSysCallVec();
 void initProcTable();
 void initSemTable();
 
-//void spawnReal(char*, int (*func)(char*), char*, unsigned int, int);
-//void waitReal(int*);
+void spawn(systemArgs*);
+int spawnReal(char*, int(*func)(char*), char*, unsigned int, int);
+void spawnLaunch();
+
+void wait(systemArgs*);
+int waitReal(int*);
+
+void terminate(systemArgs*);
+void terminateReal(int);
+
+void setUserMode();
 
 int start2(char *arg)
 {
@@ -80,9 +90,180 @@ int start2(char *arg)
     pid = waitReal(&status);
 
     
-    return -1; // should not get here
+    return pid; // should not get here
 } /* start2 */
 
+
+/* ------------------------------------------------------------------------
+    Name - spawn
+    Purpose - Extract the initial process info and call spawnReal.
+    Parameters - A systemArgs that contains information sent from user mode process.
+    Returns - None.
+    Side Effects - Many.
+ ----------------------------------------------------------------------- */
+void spawn(systemArgs *sysArg)
+{
+    if(debugflag3)
+        USLOSS_Console("spawn(): entered\n");
+    
+    // extract sysArg
+    int (*func)(char *) = sysArg->arg1;
+    char *arg = sysArg->arg2;
+    int stackSize = (long) sysArg->arg3;
+    int priority = (long) sysArg->arg4;
+    char *name = sysArg->arg5;
+    
+    // get kidpid
+    int kidpid = spawnReal(name, func, arg, stackSize, priority);
+    
+    // update sysArg
+    sysArg->arg1 = (void*) ((long)kidpid);
+    
+    // if zapped terminate itself
+    
+    // set to user mode
+    setUserMode();
+    return;
+} /* spawn */
+
+
+
+/* ------------------------------------------------------------------------
+    Name - spawnReal
+    Purpose - Create a new child for a user process.
+    Parameters - Same set of parameters that will be used in fork1.
+    Returns - Process ID of the new spawned child.
+    Side Effects - Processs table gets updated.
+ ----------------------------------------------------------------------- */
+int spawnReal(char* name, int (*func)(char*), char *arg, unsigned int stackSize, int priority)
+{
+    if (debugflag3)
+        USLOSS_Console("spawnReal(): entered\n");
+    
+    // fork1 new process
+    int kidpid = fork1(name, (void *)spawnLaunch, arg, stackSize, priority);
+    
+    // update process table
+    ProcTable[kidpid % MAXPROC].pid         = kidpid;
+    ProcTable[kidpid % MAXPROC].startFunc   = func;
+    ProcTable[kidpid % MAXPROC].priority    = priority;
+    if (arg != NULL)
+    {
+        memcpy(ProcTable[kidpid%MAXPROC].startArg, arg, strlen(arg));
+    }
+    /* end of updating process table */
+    
+    // Send to child's private mail box when it gets to run earlier than parent
+    if (ProcTable[kidpid % MAXPROC].priority <
+        ProcTable[getpid() % MAXPROC].priority)
+        MboxSend(ProcTable[kidpid % MAXPROC].privateMboxID, NULL, 0);
+    
+    return kidpid;
+} /* spawnReal */
+
+
+/* ------------------------------------------------------------------------
+    Name - spawnLaunch
+    Purpose - Launch the newly spawned process.
+    Parameters - None.
+    Returns - None.
+    Side Effects - New process gets to run.
+ ----------------------------------------------------------------------- */
+void spawnLaunch()
+{
+    if (debugflag3)
+        USLOSS_Console("spawnLaunch(): entered\n");
+    
+    int result;
+    int curpid = getpid();
+    // has not synchronized with parent yet
+    if (ProcTable[curpid % MAXPROC].pid == -1)
+        MboxReceive(ProcTable[curpid % MAXPROC].privateMboxID, NULL, 0);
+    
+    // launch current process
+    setUserMode();
+    result = ProcTable[curpid % MAXPROC].startFunc(ProcTable[curpid % MAXPROC].startArg);
+    
+    // calling upper case Terminate because we are in user mode
+    Terminate(result);
+    
+} /* spawnLaunch */
+
+
+/* ------------------------------------------------------------------------
+    Name - wait
+    Purpose - Call waitReal and then update sysArgs
+    Parameter - sysArg
+    Return - None.
+    Side effects - sysArg gets updated.
+ ----------------------------------------------------------------------- */
+void wait(systemArgs *sysArg)
+{
+    if (debugflag3)
+        USLOSS_Console("wait(): entered\n");
+    
+    // call waitReal
+    int quitStatus;
+    int quitpid = waitReal(&quitStatus);
+    
+    // update sysArgs
+    sysArg->arg1 = (void*) ((long)quitpid);
+    sysArg->arg2 = (void*) ((long)quitStatus);
+    
+    // set to user mode
+    setUserMode();
+    
+} /* wait */
+
+
+/* ------------------------------------------------------------------------
+    Name - waitReal
+    Purpose - Equivalent to join in phase1.
+    Parameters - A status that indicate the quit status of quit child process.
+    Returns - Returns the the process id of the quitted child.
+    Side Effects - None.
+ ----------------------------------------------------------------------- */
+int waitReal(int *status)
+{
+    if (debugflag3)
+        USLOSS_Console("waitReal(): entered\n");
+    
+    int quitpid = join(status);
+    return quitpid;
+} /* waitReal */
+
+
+/* ------------------------------------------------------------------------
+    Name - terminate
+    Purpose - Pass status's address to terminate real and call it.
+    Parameters - A sysArg.
+    Returns - None.
+    Side Effects - sysArg gets updated.
+ ----------------------------------------------------------------------- */
+void terminate(systemArgs *sysArg)
+{
+    if (debugflag3)
+        USLOSS_Console("terminate(): entered\n");
+    
+    terminateReal((long)sysArg->arg1);
+    setUserMode();
+} /* terminate */
+
+
+/* ------------------------------------------------------------------------
+    Name - terminateReal
+    Purpose - Equivalent to quit in phase1.
+    Parameters - Adress to status.
+    Returns - None.
+    Side Effects - sysArg gets updated.
+ ----------------------------------------------------------------------- */
+void terminateReal(int status)
+{
+    if (debugflag3)
+        USLOSS_Console("terminate(): entered\n");
+    
+    quit(status);
+} /* terminateReal */
 
 
 /*---------- check_kernel_mode ----------*/
@@ -98,9 +279,9 @@ void check_kernel_mode(char *arg)
 /*---------- nullsys3 ----------*/
 void nullsys3()
 {
-    USLOSS_Console("nullsys3(): called. Halting..\n");
-    //TODO: should terminate current process instead of halting
-    USLOSS_Halt(1);
+    USLOSS_Console("nullsys3(): called. Terminating current process..\n");
+    terminateReal(-1);
+    //USLOSS_Halt(1);
     
 } /* nullsys3 */
 
@@ -111,9 +292,16 @@ void initSysCallVec()
     if (debugflag3)
         USLOSS_Console("initSysCallVec(): entered");
     
+    // assign nullsys3 to all other vectors
     int i;
     for (i = 0; i < USLOSS_MAX_SYSCALLS; i++)
         systemCallVec[i] = nullsys3;
+    
+    // known vectors
+    systemCallVec[SYS_SPAWN] = (void *)spawn;
+    systemCallVec[SYS_WAIT] = (void *)wait;
+    systemCallVec[SYS_TERMINATE] = (void *)terminate;
+    
 } /* initSysCallVec */
 
 
@@ -135,7 +323,7 @@ void initProcTable()
             .nextProcPtr    = NULL,
             .childProcPtr   = NULL,
             .nextSiblingPtr = NULL,
-            .privateMBoxID  = -1,
+            .privateMboxID  = MboxCreate(0,0),
             .parentPID      = -1
         };
         // name and startArg is initialized here
@@ -162,3 +350,10 @@ void initSemTable()
     }
     
 } /* initSemTable */
+
+/*---------- setUserMode ----------*/
+void setUserMode(){
+    if(debugflag3)
+        USLOSS_Console("setUserMode(): entered\n");
+    USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE );
+} /* setUserMode */

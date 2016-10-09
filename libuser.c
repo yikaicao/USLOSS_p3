@@ -15,7 +15,7 @@
 #define CHECKMODE {    \
     if (USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE) { \
         USLOSS_Console("Trying to invoke syscall from kernel\n"); \
-        halt(1);  \
+        USLOSS_Halt(1);  \
     }  \
 }
 
@@ -44,14 +44,14 @@ int Spawn(char *name, int (*func)(char *), char *arg, int stack_size,
     sysArg.number = SYS_SPAWN;
     sysArg.arg1 = (void *) func;
     sysArg.arg2 = arg;
-    sysArg.arg3 = (void *) stack_size;
-    sysArg.arg4 = (void *) priority;
+    sysArg.arg3 = (void *) (long)((int)stack_size);
+    sysArg.arg4 = (void *) (long)((int)priority);
     sysArg.arg5 = name;
 
     USLOSS_Syscall(&sysArg);
 
-    *pid = (int) sysArg.arg1;
-    return (int) sysArg.arg4;
+    *pid = (int) ((long)sysArg.arg1);
+    return (int) ((long)sysArg.arg4);
 } /* end of Spawn */
 
 
@@ -77,9 +77,9 @@ int Wait(int *pid, int *status)
 
     USLOSS_Syscall(&sysArg);
 
-    *pid = (int) sysArg.arg1;
-    *status = (int) sysArg.arg2;
-    return (int) sysArg.arg4;
+    *pid = (int) ((long)sysArg.arg1);
+    *status = (int)((long) sysArg.arg2);
+    return (int)((long) sysArg.arg4);
     
 } /* end of Wait */
 
@@ -97,7 +97,13 @@ int Wait(int *pid, int *status)
  */
 void Terminate(int status)
 {
+    systemArgs sysArg;
     
+    CHECKMODE;
+    sysArg.number = SYS_TERMINATE;
+    sysArg.arg1 = (void *) (long)((int)status);
+    
+    USLOSS_Syscall(&sysArg);
 } /* end of Terminate */
 
 

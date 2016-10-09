@@ -112,7 +112,7 @@ void Terminate(int status)
  *
  *  Description: Create a semaphore.
  *
- *  Arguments:
+ *  Arguments: Initial value and semaphore's ID to be encoded.
  *
  */
 int SemCreate(int value, int *semaphore)
@@ -134,13 +134,19 @@ int SemCreate(int value, int *semaphore)
  *
  *  Description: "P" a semaphore.
  *
- *  Arguments:
+ *  Arguments: Semaphore's ID.
  *
  */
 int SemP(int semaphore)
 {
-    int something = 0;
-    return something;
+    systemArgs sysArg;
+    
+    CHECKMODE;
+    sysArg.number = SYS_SEMP;
+    sysArg.arg1 = (void *) (long)((int) semaphore);
+    USLOSS_Syscall(&sysArg);
+    
+    return (int)((long)sysArg.arg4);
 } /* end of SemP */
 
 
@@ -149,13 +155,19 @@ int SemP(int semaphore)
  *
  *  Description: "V" a semaphore.
  *
- *  Arguments:
+ *  Arguments: Semaphore's ID.
  *
  */
 int SemV(int semaphore)
 {
-    int something = 0;
-    return something;
+    systemArgs sysArg;
+    
+    CHECKMODE;
+    sysArg.number = SYS_SEMV;
+    sysArg.arg1 = (void *) (long)((int) semaphore);
+    USLOSS_Syscall(&sysArg);
+    
+    return (int)((long)sysArg.arg4);
 } /* end of SemV */
 
 
@@ -164,13 +176,19 @@ int SemV(int semaphore)
  *
  *  Description: Free a semaphore.
  *
- *  Arguments:
+ *  Arguments: Semaphore's ID.
  *
  */
 int SemFree(int semaphore)
 {
-    int something = 0;
-    return something;
+    systemArgs sysArg;
+    
+    CHECKMODE;
+    sysArg.number = SYS_SEMFREE;
+    sysArg.arg1 = (void *) (long)((int) semaphore);
+    USLOSS_Syscall(&sysArg);
+    
+    return (int)((long)sysArg.arg4);
 } /* end of SemFree */
 
 
@@ -210,6 +228,14 @@ void CPUTime(int *cpu)
  */
 void GetPID(int *pid)                           
 {
+    systemArgs sysArg;
+    
+    CHECKMODE;
+    sysArg.number = SYS_GETPID;
+    USLOSS_Syscall(&sysArg);
+    
+    *pid = (int)((long)sysArg.arg1);
+    
 } /* end of GetPID */
 
 /* end libuser.c */

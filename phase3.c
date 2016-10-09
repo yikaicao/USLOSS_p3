@@ -20,26 +20,42 @@ semaphore   SemTable[MAX_SEMS];
 /*---------- Function Prototypes ----------*/
 extern int start3(char*);
 
-void check_kernel_mode(char*);
-void setUserMode();
-void nullsys3();
-
+// initialization
 void initSysCallVec();
 void initProcTable();
 void initSemTable();
 
+// fork join quit
 void spawn(systemArgs*);
 int spawnReal(char*, int(*func)(char*), char*, unsigned int, int);
 void spawnLaunch();
-
 void wait(systemArgs*);
 int waitReal(int*);
-
 void terminate(systemArgs*);
 void terminateReal(int);
 
+// semaphore
 void semCreate(systemArgs*);
 int semCreateReal(int);
+void semP(systemArgs*);
+void semPReal(int);
+void semV(systemArgs*);
+void semVReal(int);
+void semFree(systemArgs*);
+int semFreeReal(int);
+
+// ohter syscall
+void getPID(systemArgs*);
+
+// system helpers
+void check_kernel_mode(char*);
+void setUserMode();
+void nullsys3();
+
+// blockedList helper
+void pushBlockedList(procPtr*, procPtr);
+int dequeueBlockedList(procPtr*);
+void printBlockedList(int);
 
 int start2(char *arg)
 {
@@ -114,8 +130,8 @@ void spawn(systemArgs *sysArg)
     // extract sysArg
     int (*func)(char *) = sysArg->arg1;
     char *arg = sysArg->arg2;
-    int stackSize = (long) sysArg->arg3;
-    int priority = (long) sysArg->arg4;
+    int stackSize = (int)((long) sysArg->arg3);
+    int priority = (int)((long) sysArg->arg4);
     char *name = sysArg->arg5;
     
     // check value
@@ -292,7 +308,7 @@ void semCreate(systemArgs *sysArg)
         USLOSS_Console("semCreate(): entered\n");
     
     // extract value from sysArg
-    int initValue = (long)sysArg->arg1;
+    int initValue = (int)((long)sysArg->arg1);
     
     // check value
     if (initValue < 0)
@@ -359,6 +375,250 @@ int semCreateReal(int initValue)
     
 } /* semCreateReal */
 
+/* ------------------------------------------------------------------------
+    Name - semP
+    Purpose - Check value and call semPReal.
+    Parameters - Semaphore's ID.
+    Returns - None.
+    Side Effects - A sysArg gets encoded.
+ ----------------------------------------------------------------------- */
+void semP(systemArgs *sysArg)
+{
+    if (debugflag3)
+        USLOSS_Console("semP(): entered\n");
+    
+    // extract from sysArg
+    int semID = (int)((long)sysArg->arg1);
+    
+    // check value
+    if (semID < 0 || semID >= MAX_SEMS)
+    {
+        sysArg->arg4 = (void*) (long) -1;
+        return;
+    }
+    
+    // call semPReal
+    semPReal(semID);
+    
+    // encode sysArg
+    sysArg->arg1 = (void*) (long) 0;
+    
+    // set to user mode
+    setUserMode();
+    
+} /* semP */
+
+/* ------------------------------------------------------------------------
+    Name - semPReal
+    Purpose - Actually P a semaphore. Detail in course slides.
+    Parameters - Semaphore's ID.
+    Returns - None.
+    Side Effects - Decrement semaphore's count
+ ----------------------------------------------------------------------- */
+void semPReal(int semID)
+{
+    if (debugflag3)
+    {
+        USLOSS_Console("semP(): entered\n");
+        USLOSS_Console("semP(): count = %d\n",SemTable[semID].count);
+    }
+    
+    // send to mutex, to ensure there is only one process modifying sem count
+    MboxSend(SemTable[semID].mutexID, NULL, 0);
+    
+    // if P'able
+    if (SemTable[semID].count > 0)
+    {
+        SemTable[semID].count -= 1;
+        
+        // receive from mutex
+        MboxReceive(SemTable[semID].mutexID, NULL, 0);
+    }
+    // not P'able
+    else
+    {
+        if (debugflag3)
+            USLOSS_Console("semP(): P not sucessful, blocking..\n");
+        
+        // receive from mutex
+        MboxReceive(SemTable[semID].mutexID, NULL, 0);
+        
+        // block process
+        pushBlockedList(&SemTable[semID].blockedList, &ProcTable[getpid() % MAXPROC]);
+        
+        int msg = 0;
+        MboxReceive(ProcTable[getpid() % MAXPROC].privateMboxID, &msg, sizeof(int));
+        
+        // semaphore is freed
+        if (msg == -1)
+        {
+            terminateReal(0);
+        }
+    }
+} /* semPReal */
+
+
+
+/* ------------------------------------------------------------------------
+    Name - semV
+    Purpose - Check value and call semVReal.
+    Parameters - Semaphore's ID.
+    Returns - None.
+    Side Effects - A sysArg gets encoded.
+ ----------------------------------------------------------------------- */
+void semV(systemArgs *sysArg)
+{
+    if (debugflag3)
+        USLOSS_Console("semV(): entered\n");
+    
+    // extract from sysArg
+    int semID = (int)((long)sysArg->arg1);
+    
+    // check value
+    if (semID < 0 || semID >= MAX_SEMS)
+    {
+        sysArg->arg4 = (void*) (long) -1;
+        return;
+    }
+    
+    // call semVReal
+    semVReal(semID);
+    
+    // encode sysArg
+    sysArg->arg1 = (void*) (long) 0;
+    
+    // set to user mode
+    setUserMode();
+    
+} /* semV */
+
+
+/* ------------------------------------------------------------------------
+    Name - semVReal
+    Purpose - Actually V a semaphore.
+    Parameters - Semaphore's ID.
+    Returns - None.
+    Side Effects - Increment semaphore's count or unblocked a process.
+ ----------------------------------------------------------------------- */
+void semVReal(int semID)
+{
+    if (debugflag3)
+        USLOSS_Console("semVReal(): entered\n");
+    
+    // send to mutex, to ensure there is only one process modifying sem count
+    MboxSend(SemTable[semID].mutexID, NULL, 0);
+   
+    // unblock a process
+    if (SemTable[semID].blockedList != NULL)
+    {
+        // dequeue semaphore's blocked list
+        int toBeUnblocked = dequeueBlockedList(&SemTable[semID].blockedList);
+        
+        // unblock top process
+        MboxSend(ProcTable[toBeUnblocked % MAXPROC].privateMboxID, NULL, 0);
+    }
+    // increment semaphore's count
+    else
+    {
+        SemTable[semID].count += 1;
+    }
+    
+    // receive from mutex
+    MboxReceive(SemTable[semID].mutexID, NULL, 0);
+    
+} /* semVReal */
+
+
+/* ------------------------------------------------------------------------
+    Name - semFree
+    Purpose - Check value and call semFreeReal.
+    Parameters - A sysArg.
+    Returns - None.
+    Side Effects - A sysArg gets encoded.
+ ----------------------------------------------------------------------- */
+void semFree(systemArgs *sysArg)
+{
+    if (debugflag3)
+        USLOSS_Console("semFree(): entered\n");
+    
+    // extract from sysArg
+    int semID = (int)((long)sysArg->arg1);
+    
+    // check value
+    if (semID < 0 || semID >= MAX_SEMS)
+    {
+        sysArg->arg4 = (void*) (long) -1;
+        return;
+    }
+    
+    // call semVReal
+    int result = semFreeReal(semID);
+    
+    // encode sysArg
+    sysArg->arg4 = (void*) (long) result;
+    
+    // set to user mode
+    setUserMode();
+} /* semFree */
+
+
+/* ------------------------------------------------------------------------
+    Name - semFreeReal
+    Purpose - Actually free a semaphore.
+    Parameters - Semaphore's ID.
+    Returns - None.
+    Side Effects - Any process waiting on a semaphore when it is freed should be terminated.
+ ----------------------------------------------------------------------- */
+int semFreeReal(int semID)
+{
+    if (debugflag3)
+        USLOSS_Console("semFreeReal(): entered\n");
+    
+    int toReturn = 0;
+    
+    // unblock blocked process(es)
+    procPtr head = SemTable[semID].blockedList;
+    
+    // indicate there were process blocked
+    if (head != NULL)
+        toReturn = 1;
+    
+    while (head != NULL)
+    {
+        // send a msg to let blocked process know the semaphore is freed
+        int msg = -1;
+        MboxSend(ProcTable[head->pid].privateMboxID, &msg, sizeof(int));
+        
+        head = head->nextProcPtr;
+    }
+    
+    // wipe out semaphore
+    SemTable[semID] = (semaphore) {
+        .sid            = -1,
+        .count          = -1,
+        .blockedList    = NULL,
+        .mutexID        = -1
+    };
+    
+    return toReturn;
+} /* semFreeReal */
+
+
+
+
+
+/* ------------------------------------------------------------------------
+    Name - getPID
+    Purpose - Encode sysArg with current pid.
+    Parameters - A sysArg.
+    Returns - None.
+    Side Effects - A sysArg gets encoded.
+ ----------------------------------------------------------------------- */
+void getPID(systemArgs *sysArg)
+{
+    sysArg->arg1 = (void*) (long) getpid();
+} /* getPID */
+
 
 /*---------- check_kernel_mode ----------*/
 void check_kernel_mode(char *arg)
@@ -404,6 +664,10 @@ void initSysCallVec()
     systemCallVec[SYS_WAIT] = (void *)wait;
     systemCallVec[SYS_TERMINATE] = (void *)terminate;
     systemCallVec[SYS_SEMCREATE] = (void *)semCreate;
+    systemCallVec[SYS_SEMP] = (void *)semP;
+    systemCallVec[SYS_SEMV] = (void *)semV;
+    systemCallVec[SYS_SEMFREE] = (void *)semFree;
+    systemCallVec[SYS_GETPID] = (void *)getPID;
     
     
 } /* initSysCallVec */
@@ -427,7 +691,7 @@ void initProcTable()
             .nextProcPtr    = NULL,
             .childProcPtr   = NULL,
             .nextSiblingPtr = NULL,
-            .privateMboxID  = MboxCreate(0,0),
+            .privateMboxID  = MboxCreate(0,MAX_MESSAGE),
             .parentPID      = -1
         };
         // name and startArg is initialized here
@@ -456,3 +720,55 @@ void initSemTable()
     
 } /* initSemTable */
 
+
+/* ------------------------- pushBlockedList ------------------------- */
+// note that we are only storing procPtr here
+void pushBlockedList(procPtr *blockedList, procPtr newBlocked)
+{
+    // no blocked process yet
+    if (*blockedList == NULL)
+    {
+        *blockedList = newBlocked;
+    }
+    // has other blocked process(es)
+    else
+    {
+        procPtr tmp = *blockedList;
+        while(tmp->nextProcPtr != NULL)
+            tmp = tmp->nextProcPtr;
+        tmp->nextProcPtr = newBlocked;
+    }
+} /* pushBlockedList */
+
+
+/* ------------------------- dequeueBlockedList ------------------------- */
+int dequeueBlockedList(procPtr *blockedList)
+{
+    // why would I dequeue if there is no blocked process in the list?
+    if (*blockedList == NULL)
+    {
+        USLOSS_Console("should not get here");
+        return -1;
+    }
+    
+    // delete process in blockedList
+    procPtr tmp = *blockedList;
+    *blockedList = tmp->nextProcPtr;
+    
+    return tmp->pid;
+} /* dequeueBlockedList */
+
+
+/* ------------------------- printBlockedList ------------------------- */
+void printBlockedList(int semID)
+{
+    procPtr tmp = SemTable[semID].blockedList;
+    while(tmp != NULL)
+    {
+        USLOSS_Console("\tblocked pid = %d, name = %s, parentPID = %d\n",
+                       tmp->pid,
+                       tmp->name,
+                       tmp->parentPID);
+        tmp = tmp->nextProcPtr;
+    }
+}

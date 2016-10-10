@@ -20,7 +20,7 @@ struct procStruct{
     int         (* startFunc) (char *);
     unsigned int stackSize;
     procPtr     nextProcPtr; // to keep track of next blocked process waiting for a semaphore
-    procPtr     childProcPtr; // used in terminate
+    procPtr     childList; // used in terminate
     procPtr     nextSiblingPtr; // used in terminate
     int         privateMboxID; // used in self blocked
     int         parentPID; // used in terminate

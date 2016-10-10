@@ -24,6 +24,7 @@ extern int start3(char*);
 void initSysCallVec();
 void initProcTable();
 void initSemTable();
+void clearProcess();
 
 // fork join quit
 void spawn(systemArgs*);
@@ -56,6 +57,15 @@ void nullsys3();
 void pushBlockedList(procPtr*, procPtr);
 int dequeueBlockedList(procPtr*);
 void printBlockedList(int);
+
+// childList helper
+void pushChildList(procPtr*, procPtr);
+void dequeueChildList(procPtr*);
+void printChildList(int);
+
+//debug
+void printProcTable();
+
 
 int start2(char *arg)
 {
@@ -173,18 +183,29 @@ int spawnReal(char* name, int (*func)(char*), char *arg, unsigned int stackSize,
     // fork1 new process
     int kidpid = fork1(name, (void *)spawnLaunch, arg, stackSize, priority);
     
+    //debug
+    if (kidpid == -1)
+        return kidpid;
+    
     // update process table
     ProcTable[kidpid % MAXPROC].pid         = kidpid;
     ProcTable[kidpid % MAXPROC].startFunc   = func;
     ProcTable[kidpid % MAXPROC].priority    = priority;
     if (arg != NULL)
-    {
         memcpy(ProcTable[kidpid%MAXPROC].startArg, arg, strlen(arg));
-    }
+    if (name != NULL)
+        memcpy(ProcTable[kidpid%MAXPROC].name, name, strlen(name));
+    
+    // fill in parentPid
+    ProcTable[kidpid % MAXPROC].parentPID   = getpid();
+    
+    // update parent's childrenList
+    pushChildList(&ProcTable[getpid() % MAXPROC].childList, &ProcTable[kidpid % MAXPROC]);
     /* end of updating process table */
     
     // synchronize with child
-    MboxSend(ProcTable[kidpid % MAXPROC].privateMboxID, NULL, 0);
+    if (ProcTable[kidpid % MAXPROC].priority < ProcTable[getpid() % MAXPROC].priority)
+        MboxSend(ProcTable[kidpid % MAXPROC].privateMboxID, NULL, 0);
     
     return kidpid;
 } /* spawnReal */
@@ -206,9 +227,15 @@ void spawnLaunch()
     int curpid = getpid();
     
     // synchronize with parent
-    MboxReceive(ProcTable[curpid % MAXPROC].privateMboxID, NULL, 0);
+    if (ProcTable[curpid % MAXPROC].pid == -1)
+        MboxReceive(ProcTable[curpid % MAXPROC].privateMboxID, NULL, 0);
     
     // launch current process
+    if (isZapped())
+    {
+        terminateReal(0);
+        return;
+    }
     setUserMode();
     result = ProcTable[curpid % MAXPROC].startFunc(ProcTable[curpid % MAXPROC].startArg);
     
@@ -289,10 +316,62 @@ void terminate(systemArgs *sysArg)
 void terminateReal(int status)
 {
     if (debugflag3)
-        USLOSS_Console("terminateReal(): entered\n");
+        USLOSS_Console("terminateReal(): entered, current pid = %d\n", getpid());
+
+    //printProcTable();
+    //debug
+//    USLOSS_Console("\t%s has following children\n", ProcTable[getpid() % MAXPROC].name);
+//    printChildList(getpid());
+//    int parent = ProcTable[getpid() % MAXPROC].parentPID;
+//    USLOSS_Console("\t%s's parent %s has following children\n", ProcTable[getpid() % MAXPROC].name, ProcTable[parent % MAXPROC].name);
+//    printChildList(parent);
+    
+    // zap all children
+    procPtr childHead = ProcTable[getpid() % MAXPROC].childList;
+    while (childHead != NULL)
+    {
+        int toBeZapped = childHead->pid;
+        zap(toBeZapped);
+        
+        //debug
+//        USLOSS_Console("\tprocess %d returned from zap\n", toBeZapped);
+//        USLOSS_Console("\tAfter zapping one child, praent %d has children\n", getpid());
+//        printChildList(getpid());
+        
+        childHead = ProcTable[getpid() % MAXPROC].childList;
+    }
+    
+    // take out myself from parent's child list
+    int parentPID = ProcTable[getpid() % MAXPROC].parentPID;
+    dequeueChildList(&ProcTable[parentPID % MAXPROC].childList);
+    
+    //debug
+//    USLOSS_Console("\tAfter zapping, %d's parent has following children\n", getpid());
+//    printChildList(parent);
+    
+    
+    //debug
+//    USLOSS_Console("\tclearing out %d\n", getpid());
+    clearProcess(getpid());
+//    USLOSS_Console("\tAfter cleaing, %d's parent has following children\n", getpid());
+//    printChildList(parent);
     
     quit(status);
+    
+    
+    
 } /* terminateReal */
+
+void dequeueChildList(procPtr *childList)
+{
+    // why would I dequeue if there is no child on the list
+    if (*childList == NULL)
+        return;
+    
+    // delete process in blockedList
+    procPtr tmp = *childList;
+    *childList = tmp->nextSiblingPtr;
+}
 
 
 /* ------------------------------------------------------------------------
@@ -452,7 +531,7 @@ void semPReal(int semID)
         // semaphore is freed
         if (msg == -1)
         {
-            terminateReal(0);
+            terminateReal(1);
         }
     }
 } /* semPReal */
@@ -585,12 +664,14 @@ int semFreeReal(int semID)
     
     while (head != NULL)
     {
+        int headPID = head->pid;
+        head = head->nextProcPtr;
+        
         // send a msg to let blocked process know the semaphore is freed
         int msg = -1;
-        MboxSend(ProcTable[head->pid].privateMboxID, &msg, sizeof(int));
-        
-        head = head->nextProcPtr;
+        MboxSend(ProcTable[headPID].privateMboxID, &msg, sizeof(int));
     }
+    
     
     // wipe out semaphore
     SemTable[semID] = (semaphore) {
@@ -603,10 +684,6 @@ int semFreeReal(int semID)
     return toReturn;
 } /* semFreeReal */
 
-
-
-
-
 /* ------------------------------------------------------------------------
     Name - getPID
     Purpose - Encode sysArg with current pid.
@@ -618,34 +695,6 @@ void getPID(systemArgs *sysArg)
 {
     sysArg->arg1 = (void*) (long) getpid();
 } /* getPID */
-
-
-/*---------- check_kernel_mode ----------*/
-void check_kernel_mode(char *arg)
-{
-    if (!(USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()))
-        USLOSS_Console("%s(): called while in user mode. Halting...\n", arg);
-} /* check_kernel_mode */
-
-
-/*---------- setUserMode ----------*/
-void setUserMode(){
-    if(debugflag3)
-        USLOSS_Console("setUserMode(): entered\n");
-    
-    // USLOSS_PsrGet() 'AND' binary number '1111110' so that last bit is set to be 0
-    USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE );
-} /* setUserMode */
-
-
-/*---------- nullsys3 ----------*/
-void nullsys3()
-{
-    USLOSS_Console("nullsys3(): called. Terminating current process..\n");
-    terminateReal(-1);
-    //USLOSS_Halt(1);
-    
-} /* nullsys3 */
 
 
 /*---------- initSysCallVec ----------*/
@@ -682,21 +731,7 @@ void initProcTable()
     int i;
     for (i = 0; i < MAXPROC; i++)
     {
-        ProcTable[i] = (procStruct) {
-            .pid            = -1,
-            .priority       = -1,
-            // name and startArg is initialized later
-            .startFunc      = NULL,
-            .stackSize      = -1,
-            .nextProcPtr    = NULL,
-            .childProcPtr   = NULL,
-            .nextSiblingPtr = NULL,
-            .privateMboxID  = MboxCreate(0,MAX_MESSAGE),
-            .parentPID      = -1
-        };
-        // name and startArg is initialized here
-        memset(ProcTable[i].name, 0, sizeof(char)*MAXNAME);
-        memset(ProcTable[i].startArg, 0, sizeof(char)*MAXARG);
+        clearProcess(i);
     }
 } /* initProcTable */
 
@@ -719,6 +754,56 @@ void initSemTable()
     }
     
 } /* initSemTable */
+
+
+/* ------------------------- clearProcess ------------------------- */
+void clearProcess(int pid)
+{
+    ProcTable[pid] = (procStruct) {
+        .pid            = -1,
+        .priority       = -1,
+        // name and startArg is initialized later
+        .startFunc      = NULL,
+        .stackSize      = -1,
+        .nextProcPtr    = NULL,
+        .childList      = NULL,
+        .nextSiblingPtr = NULL,
+        .privateMboxID  = MboxCreate(0,MAX_MESSAGE),
+        .parentPID      = -1
+    };
+    // name and startArg is initialized here
+    memset(ProcTable[pid].name, 0, sizeof(char)*MAXNAME);
+    memset(ProcTable[pid].startArg, 0, sizeof(char)*MAXARG);
+    
+} /* clearProcess */
+
+
+/*---------- check_kernel_mode ----------*/
+void check_kernel_mode(char *arg)
+{
+    if (!(USLOSS_PSR_CURRENT_MODE & USLOSS_PsrGet()))
+        USLOSS_Console("%s(): called while in user mode. Halting...\n", arg);
+} /* check_kernel_mode */
+
+
+/*---------- setUserMode ----------*/
+void setUserMode(){
+    if(debugflag3)
+        USLOSS_Console("setUserMode(): entered\n");
+    
+    // USLOSS_PsrGet() 'AND' binary number '1111110' so that last bit is set to be 0
+    USLOSS_PsrSet( USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE );
+} /* setUserMode */
+
+
+/*---------- nullsys3 ----------*/
+void nullsys3()
+{
+    USLOSS_Console("nullsys3(): called. Terminating current process..\n");
+    terminateReal(-1);
+    //USLOSS_Halt(1);
+    
+} /* nullsys3 */
 
 
 /* ------------------------- pushBlockedList ------------------------- */
@@ -771,4 +856,50 @@ void printBlockedList(int semID)
                        tmp->parentPID);
         tmp = tmp->nextProcPtr;
     }
-}
+} /* printBlockedList */
+
+
+/* ------------------------- pushChildList ------------------------- */
+// note that we are only storing procPtr here
+void pushChildList(procPtr *childList, procPtr newChild)
+{
+    // no blocked process yet
+    if (*childList == NULL)
+    {
+        *childList = newChild;
+    }
+    // has other child(ren)
+    else
+    {
+        procPtr tmp = *childList;
+        while(tmp->nextSiblingPtr != NULL)
+            tmp = tmp->nextSiblingPtr;
+        tmp->nextSiblingPtr = newChild;
+    }
+} /* pushChildList */
+
+
+/* ------------------------- printChildList ------------------------- */
+void printChildList(int pid)
+{
+    procPtr tmp = ProcTable[pid].childList;
+    while(tmp != NULL)
+    {
+        USLOSS_Console("\tchild pid = %d, name = %s\n",
+                       tmp->pid,
+                       tmp->name);
+        tmp = tmp->nextSiblingPtr;
+    }
+} /* printChildList */
+
+
+/* ------------------------- printProcTable ------------------------- */
+void printProcTable()
+{
+    int i;
+    for (i = 0; i < MAXPROC; i++)
+    {
+        procStruct cur = ProcTable[i];
+        USLOSS_Console("pid %d\t pr %d\t parent %d\n", cur.pid, cur.priority, cur.parentPID);
+    }
+} /* printProcTable */

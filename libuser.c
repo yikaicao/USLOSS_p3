@@ -202,6 +202,13 @@ int SemFree(int semaphore)
  */
 void GetTimeofDay(int *tod)                           
 {
+    systemArgs sysArg;
+    
+    CHECKMODE;
+    sysArg.number = SYS_GETTIMEOFDAY;
+    USLOSS_Syscall(&sysArg);
+    
+    *tod = (int)((long)sysArg.arg1);
 } /* end of GetTimeofDay */
 
 
@@ -215,6 +222,13 @@ void GetTimeofDay(int *tod)
  */
 void CPUTime(int *cpu)                           
 {
+    systemArgs sysArg;
+    
+    CHECKMODE;
+    sysArg.number = SYS_CPUTIME;
+    USLOSS_Syscall(&sysArg);
+    
+    *cpu = (int)((long)sysArg.arg1);
 } /* end of CPUTime */
 
 

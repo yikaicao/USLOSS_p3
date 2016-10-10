@@ -47,6 +47,7 @@ int semFreeReal(int);
 
 // ohter syscall
 void getPID(systemArgs*);
+void cpuTime(systemArgs*);
 
 // system helpers
 void check_kernel_mode(char*);
@@ -684,6 +685,33 @@ int semFreeReal(int semID)
     return toReturn;
 } /* semFreeReal */
 
+
+/* ------------------------------------------------------------------------
+    Name - getTimeOfDay
+    Purpose - Return usloss clock.
+    Parameters - A sysArg.
+    Returns - None.
+    Side Effects - None.
+ ----------------------------------------------------------------------- */
+void getTimeOfDay(systemArgs *sysArg)
+{
+    sysArg->arg1 = (void*) (long) USLOSS_Clock();
+} /* getTimeOfDay */
+
+
+/* ------------------------------------------------------------------------
+    Name - cpuTime
+    Purpose - Return current cputime.
+    Parameters - A sysArg.
+    Returns - None.
+    Side Effects - None.
+ ----------------------------------------------------------------------- */
+void cpuTime(systemArgs *sysArg)
+{
+    sysArg->arg1 = (void*) (long) readtime();
+} /* cpuTime */
+
+
 /* ------------------------------------------------------------------------
     Name - getPID
     Purpose - Encode sysArg with current pid.
@@ -716,6 +744,8 @@ void initSysCallVec()
     systemCallVec[SYS_SEMP] = (void *)semP;
     systemCallVec[SYS_SEMV] = (void *)semV;
     systemCallVec[SYS_SEMFREE] = (void *)semFree;
+    systemCallVec[SYS_GETTIMEOFDAY] = (void *)getTimeOfDay;
+    systemCallVec[SYS_CPUTIME] = (void *)cpuTime;
     systemCallVec[SYS_GETPID] = (void *)getPID;
     
     
